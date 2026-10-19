@@ -343,9 +343,11 @@ below. The `test` job is identical to the EC2 guide (real Postgres/Redis sidecar
 `deploy` job builds the image, pushes to ECR, runs migrations as a one-off task, and
 updates the service.
 
-> **Only one deploy workflow should be active per environment.** The repo also has
-> `ci-cd.yml` (the single-EC2 path). If you deploy via ECS, delete or disable
-> `ci-cd.yml` so a push to `main` doesn't trigger both.
+> **This workflow ships disabled by default.** Its trigger is `workflow_dispatch`
+> (manual run from the Actions tab) so it never fires alongside `ci-cd.yml` on a push.
+> To make ECS your primary path: provision the AWS infra below and set its secrets,
+> change the `on:` trigger back to `push`/`pull_request` on `main` (shown in the YAML
+> comments), then disable or delete `ci-cd.yml`.
 
 ```yaml
 name: Deploy to ECS

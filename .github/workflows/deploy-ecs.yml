@@ -1,13 +1,14 @@
 name: Deploy to ECS
 
-# Test on every push/PR to main; build + deploy only on direct pushes to main.
-# NOTE: ci-cd.yml handles the single-EC2 deploy path. Enable only ONE deploy
-# workflow for a given environment to avoid deploying twice.
+# DISABLED BY DEFAULT: ci-cd.yml is the active deploy path (single EC2 instance).
+# This ECS pipeline only runs when triggered manually from the Actions tab, so a
+# push to main never triggers both workflows. To make ECS your primary path:
+#   1. provision the AWS infra in DEPLOY_ECS.md and set its GitHub secrets,
+#   2. replace the `workflow_dispatch` trigger below with the push/pull_request one
+#      documented in DEPLOY_ECS.md, and
+#   3. disable or delete ci-cd.yml.
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+  workflow_dispatch:
 
 env:
   AWS_REGION: us-east-1
@@ -102,7 +103,10 @@ jobs:
   deploy:
     needs: test
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # Runs on manual dispatch (the only trigger while this workflow is the
+    # non-default path). If you switch `on:` back to push/pull_request, restore:
+    #   if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: github.event_name == 'workflow_dispatch'
 
     # OIDC: exchange a short-lived token for an AWS role (no static keys in the repo)
     permissions:
