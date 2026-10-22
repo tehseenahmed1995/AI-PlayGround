@@ -1,10 +1,11 @@
-name: CI/CD Pipeline
+name: CI/CD Pipeline (EC2 + Docker Compose) [disabled — manual only]
 
+# DISABLED BY DEFAULT: deploy-ecs-ec2.yml is now the active pipeline (Option A,
+# see DEPLOY_ECS_EC2.md). This simpler Compose-over-SSH path (DEPLOY_EC2.md) is
+# kept for reference and only runs when triggered manually from the Actions tab,
+# so a push to main never triggers two deploy pipelines.
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+  workflow_dispatch:
 
 jobs:
   test:
@@ -90,7 +91,10 @@ jobs:
   deploy:
     needs: test
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # Manual-dispatch only while this is the non-default path. To restore as the
+    # primary push-triggered pipeline, change `on:` above back to push/pull_request
+    # and use: if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: github.event_name == 'workflow_dispatch'
 
     steps:
       - uses: actions/checkout@v4

@@ -1,0 +1,173 @@
+name: Deploy to ECS (EC2 launch type)
+
+# Full production-shaped pipeline on free-tier compute:
+#   test -> build image -> push to ECR -> register new task def -> update service -> rollback on failure
+#
+# This is the ACTIVE learn-the-pipeline workflow for Option A (DEPLOY_ECS_EC2.md).
+# It triggers on push/PR to main. If you also enable ci-cd.yml or deploy-ecs.yml,
+# disable them so a single push doesn't run multiple deploy pipelines.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: ai-playground
+  ECS_CLUSTER: ai-playground
+  ECS_SERVICE: ai-playground-svc
+  ECS_TASK_FAMILY: ai-playground-ec2
+  TASK_DEF_FILE: .aws/ecs-task-def-ec2.json
+  CONTAINER_NAME: app
+
+jobs:
+  # ---------- Job 1: test (the CI gate) ----------
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_DB: ai_playground_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: secret
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
+      redis:
+        image: redis:alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 10s
+          --health-timeout 5s --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: pdo_pgsql, pgsql, redis, zip, gd, bcmath
+          coverage: none
+
+      - name: Install Composer dependencies
+        run: composer install --no-interaction --prefer-dist
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install NPM dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Prepare environment
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+
+      - name: Run migrations + tests
+        env:
+          DB_CONNECTION: pgsql
+          DB_HOST: 127.0.0.1
+          DB_PORT: 5432
+          DB_DATABASE: ai_playground_test
+          DB_USERNAME: postgres
+          DB_PASSWORD: secret
+          REDIS_HOST: 127.0.0.1
+        run: |
+          php artisan migrate --force
+          php artisan test
+
+  # ---------- Job 2: build, push, deploy, rollback-on-failure ----------
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    permissions:
+      id-token: write    # OIDC: assume an AWS role without stored keys
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # Build once, tag with the immutable commit SHA + 'latest', push both.
+      - name: Build and push image
+        id: build
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          IMAGE=$REGISTRY/$ECR_REPOSITORY
+          docker build -f docker/ecs/Dockerfile -t $IMAGE:${{ github.sha }} -t $IMAGE:latest .
+          docker push $IMAGE:${{ github.sha }}
+          docker push $IMAGE:latest
+          echo "image=$IMAGE:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+      # Capture the currently-deployed task def ARN so we can roll back to it on failure.
+      - name: Record current task definition (for rollback)
+        id: current
+        run: |
+          CURRENT=$(aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+            --query 'services[0].taskDefinition' --output text)
+          echo "arn=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "Current task definition: $CURRENT"
+
+      # Produce a new task-def JSON with the SHA-tagged image swapped in.
+      - name: Render new task definition
+        id: render
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: ${{ env.TASK_DEF_FILE }}
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ steps.build.outputs.image }}
+
+      # Register the rendered task def and deploy it. --wait-for-service-stability
+      # makes the step fail if the new task doesn't become healthy.
+      - name: Deploy to ECS
+        id: deploy
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+
+      # Run migrations as a one-off task AFTER the new revision is registered.
+      - name: Run migrations (one-off task)
+        run: |
+          aws ecs run-task \
+            --cluster "$ECS_CLUSTER" \
+            --task-definition "$ECS_TASK_FAMILY" \
+            --launch-type EC2 \
+            --overrides '{"containerOverrides":[{"name":"app","command":["php","artisan","migrate","--force"]}]}'
+
+      # If the deploy step failed, point the service back at the previous task def.
+      - name: Roll back on failure
+        if: failure() && steps.current.outputs.arn != ''
+        run: |
+          echo "Deploy failed — rolling back to ${{ steps.current.outputs.arn }}"
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service "$ECS_SERVICE" \
+            --task-definition "${{ steps.current.outputs.arn }}" \
+            --force-new-deployment

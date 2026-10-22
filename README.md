@@ -68,16 +68,18 @@ are in **[RUNNING_LOCALLY.md](RUNNING_LOCALLY.md)**.
 
 ## Deployment
 
-Two deployment paths are documented, each with a GitHub Actions CI/CD pipeline and
+Three deployment paths are documented, each with a GitHub Actions CI/CD pipeline and
 step-by-step command explanations:
 
 | Path | Guide | Summary |
 |---|---|---|
-| **AWS EC2 (free tier)** | **[DEPLOY_EC2.md](DEPLOY_EC2.md)** | Single instance running the Docker Compose stack; CI deploys over SSH. Workflow: `.github/workflows/ci-cd.yml`. |
-| **AWS ECS + RDS + ElastiCache** | **[DEPLOY_ECS.md](DEPLOY_ECS.md)** | Managed containers on ECS, managed Postgres (RDS) and Redis (ElastiCache); CI builds an image, pushes to ECR, and rolls out the service. Workflow: `.github/workflows/deploy-ecs.yml`. |
+| **ECS on EC2 (free tier)** ⭐ active | **[DEPLOY_ECS_EC2.md](DEPLOY_ECS_EC2.md)** | Full production-shaped pipeline (ECR → ECS task revision → rolling deploy → rollback) on one free-tier `t3.micro`; RDS Postgres, Redis as a container. Workflow: `.github/workflows/deploy-ecs-ec2.yml`. |
+| **AWS EC2 + Compose** | **[DEPLOY_EC2.md](DEPLOY_EC2.md)** | Simplest: one instance running the Docker Compose stack; CI deploys over SSH. Workflow: `.github/workflows/ci-cd.yml` (manual-only). |
+| **AWS ECS + Fargate** | **[DEPLOY_ECS.md](DEPLOY_ECS.md)** | The Fargate version of the pipeline for when you scale (not free). Workflow: `.github/workflows/deploy-ecs.yml` (manual-only). |
 
-> Enable only **one** deploy workflow per environment so a push to `main` doesn't
-> trigger both pipelines.
+> Only **one** deploy workflow is push-triggered at a time — currently
+> `deploy-ecs-ec2.yml`. The others run only via manual dispatch, so a push to `main`
+> triggers a single pipeline.
 
 ## API Documentation
 
